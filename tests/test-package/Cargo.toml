@@ -1,0 +1,13 @@
+[package]
+name = "test-package"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[package.metadata.deb]
+maintainer = "titanium it"
+copyright = "titanium it"
+depends = "lldpd,$auto"
+section = "utility"
+priority = "optional"

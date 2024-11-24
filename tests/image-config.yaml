@@ -1,0 +1,18 @@
+config:
+  workdir: /tmp/test1
+
+image:
+  name: image
+  distro: noble
+  size: 1.5G
+
+content:
+  base: ./content
+  apt_packages:
+    - vim
+# should be in content/packages dir
+  local_packages:
+    - test-package_0.1.0-1_amd64.deb
+# should be in content/scripts dir
+  scripts:
+    - hello.sh
