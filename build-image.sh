@@ -10,8 +10,7 @@ function phase1() {
     IMAGE_NAME=$2
     IMAGE_SIZE=$3
 
-    mkdir $WORKDIR
-    pushd $WORKDIR &>$WORKDIR/phase1.log
+   pushd $WORKDIR &>$WORKDIR/phase1.log
 
     echo "PHASE-1: create image"
     BLOCKS=$(numfmt --from=iec $IMAGE_SIZE)
@@ -19,15 +18,16 @@ function phase1() {
     BLOCKS=$(($ESP + $BLOCKS))
     dd if=/dev/zero of=$IMAGE_NAME bs=1 count=0 seek=$BLOCKS &>>phase1.log
 
-    echo "PHASE-1: create partitions"
+   echo "PHASE-1: create partitions"
+
     cat <<EOF | sfdisk $IMAGE_NAME &>>phase1.log
 label: gpt
 unit: sectors
 first-lba: 2048
 sector-size: 512
 
-start=2048, size=512M , type=U
-            size=$PART_SIZE, type=L
+2048 +512M U
+- $IMAGE_SIZE L
 EOF
 
     export LOOP=$(losetup --show -fP $IMAGE_NAME)
@@ -43,7 +43,7 @@ EOF
 function phase2() {
     WORKDIR=$1
     LOOP=$2
-    DISTRO="noble"
+    DISTRO=$(echo $CONFIG_FILE | jq -r '.image.distro')
     MIRROR="http://nl.archive.ubuntu.com/ubuntu/"
     P1=$(echo $LOOP"p1")
     P2=$(echo $LOOP"p2")
@@ -76,15 +76,21 @@ function phase2() {
 
     echo "PHASE-2: Setup custom content"
     CONTENT_DIR=$(echo $CONFIG_FILE | jq -r '.content.base')
-    cp -vr $CONTENT_DIR $WORKDIR/chroot/install
+    pushd $CONTENT_DIR
+    cp -avr . $WORKDIR/chroot/install
+    popd
 
+    LOCAL_PACKAGE_DIR=$(echo $CONFIG_FILE | jq -r '.content.local_package_dir')
+    mkdir -p $WORKDIR/chroot/install/packages
+    cp -v $LOCAL_PACKAGE_DIR/*.deb $WORKDIR/chroot/install/packages
+    mkdir -p $WORKDIR/chroot/install/scripts
 }
 
 function phase3() {
-    WORKDIR=$1
+    WORKDIR=$3
     export LOOP=$2
     export HOSTNAME=testhost
-    export DISTRO=noble
+    export DISTRO=$(echo $CONFIG_FILE | jq -r '.image.distro')
 
     P2=$(echo $LOOP"p2")
 
@@ -93,14 +99,14 @@ function phase3() {
 
     echo "PHASE-3: create install and config files in image"
     cat <<EOF >$WORKDIR/chroot/etc/apt/sources.list
-deb http://archive.ubuntu.com/ubuntu/ $DISTRO main universe 
-deb-src http://archive.ubuntu.com/ubuntu/ $DISTRO main universe 
+deb http://archive.ubuntu.com/ubuntu/ $DISTRO main universe
+deb-src http://archive.ubuntu.com/ubuntu/ $DISTRO main universe
 
-deb http://archive.ubuntu.com/ubuntu/ $DISTRO-security main universe 
-deb-src http://archive.ubuntu.com/ubuntu/ $DISTRO-security main universe 
+deb http://archive.ubuntu.com/ubuntu/ $DISTRO-security main universe
+deb-src http://archive.ubuntu.com/ubuntu/ $DISTRO-security main universe
 
-deb http://archive.ubuntu.com/ubuntu/ $DISTRO-updates main universe 
-deb-src http://archive.ubuntu.com/ubuntu/ $DISTRO-updates main universe 
+deb http://archive.ubuntu.com/ubuntu/ $DISTRO-updates main universe
+deb-src http://archive.ubuntu.com/ubuntu/ $DISTRO-updates main universe
 EOF
 
     cat <<EOF >$WORKDIR/chroot/etc/fstab
@@ -126,7 +132,7 @@ EOF
 
     cat <<EOF >$WORKDIR/chroot/install/phase3b.sh
 apt update
-apt -qq install -y systemd-sysv 
+apt -qq install -y systemd-sysv
 dbus-uuidgen > /etc/machine-id
 ln -fs /etc/machine-id /var/lib/dbus/machine-id
 dpkg-divert --local --rename --add /sbin/initctl
@@ -147,15 +153,22 @@ exit
 EOF
 
     cat <<EOF >$WORKDIR/chroot/install/phase3d.sh
-    apt -y install $(echo $CONFIG_FILE | jq -r '.content.apt_packages.[]|. + " "')
-    pushd /install/content/packages &>/dev/null
-    $(echo $CONFIG_FILE | jq -r '.content.local_packages.[]|"apt -y install ./" + .')
+    apt -qq --yes --force-yes install $(echo $CONFIG_FILE | jq -jr '(.content.apt_packages//[]).[]|. + " "')
+    pushd /install/packages &>/dev/null
+    $(echo $CONFIG_FILE | jq -r '(.content.local_packages//[]).[]|"find . -name \"*" + . + "*\" -exec apt -qq --yes --force-yes install {} \\;"')
+    if test -d /install/skel; then
+      pushd /install/skel
+      cp -vaf . /
+      popd
+    fi
     popd &>/dev/null
-    pushd /install/content/scripts &>/dev/null
-    chmod -R a+x *.sh
+    pushd /install/scripts &>/dev/null
+    find . -name "*.sh" -exec chmod a+x {} \;
     popd &>/dev/null
-    $(echo $CONFIG_FILE | jq -r '.content.scripts.[]|"/install/content/scripts/"+.')
+    $(echo $CONFIG_FILE | jq -r '(.content.scripts//[]).[]|"/install/scripts/"+.')
 EOF
+
+cat $WORKDIR/chroot/install/phase3d.sh
 
     cat <<EOF >$WORKDIR/chroot/install/phase4a.sh
 apt -qq -y upgrade
@@ -190,31 +203,29 @@ function phase4() {
     TYPE=$2
     echo "PHASE-4b: cleanup build $TYPE"
 
-    MOUNTS=(dev/pts var/lib/apt usr/lib/firmware dev proc sys run boot/efi var/cache/apt)
-    for MOUNT in ${MOUNTS[@]}; do
-        if [ "$TYPE" == "normal" ]; then
-            umount $WORKDIR/chroot/$MOUNT
-        else
-            umount $WORKDIR/chroot/$MOUNT || continue
-        fi
+    MOUNTS=$(mount | grep $WORKDIR/chroot | cut -f 3 -d ' ' | sort -r)
+    for MOUNT in $MOUNTS; do
+        umount $MOUNT || continue
     done
 
     if [ "$TYPE" == "normal" ]; then
-        umount $WORKDIR/chroot
         P2=$(echo $LOOP"p2")
         e2fsck -f -y $P2
         resize2fs -M $P2
-        losetup -D
+        losetup -d $LOOP
     else
-        umount $WORKDIR/chroot || true
-        losetup -D || true
+        losetup -d $LOOP || true
     fi
 
 }
 
-apt install debootstrap yq
-
-WORKDIR="$(echo $CONFIG_FILE | jq -r '.config.workdir')"
+BASEDIR="$(echo $CONFIG_FILE | jq -r '.config.workdir')"
+if test -d $BASEDIR; then
+    echo "$BASEDIR already present not building image"
+    exit 0
+fi
+mkdir -p $BASEDIR
+WORKDIR="$(realpath $BASEDIR)"
 IMAGE_NAME=$(echo $CONFIG_FILE | jq -r '.image.name')
 SIZE=$(echo $CONFIG_FILE | jq -r '.image.size')
 
