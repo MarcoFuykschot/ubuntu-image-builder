@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -ex
 
 CONFIG_FILE="$(cat $1 | yq)"
 echo $CONFIG_FILE
@@ -87,7 +87,7 @@ function phase2() {
 }
 
 function phase3() {
-    WORKDIR=$3
+    WORKDIR=$1
     export LOOP=$2
     export HOSTNAME=testhost
     export DISTRO=$(echo $CONFIG_FILE | jq -r '.image.distro')
@@ -168,8 +168,6 @@ EOF
     $(echo $CONFIG_FILE | jq -r '(.content.scripts//[]).[]|"/install/scripts/"+.')
 EOF
 
-cat $WORKDIR/chroot/install/phase3d.sh
-
     cat <<EOF >$WORKDIR/chroot/install/phase4a.sh
 apt -qq -y upgrade
 
@@ -180,10 +178,14 @@ rm /sbin/initctl
 dpkg-divert --rename --remove /sbin/initctl
 apt-get clean
 rm -rf /tmp/* ~/.bash_history
-rm -rf /phase3
+rm -rf /install
 export HISTSIZE=0
+ 
+ls -lR /var/lib/snapd
+
 exit
 EOF
+
 
     echo "PHASE-3a: setup mount points"
     chroot $WORKDIR/chroot bash -e /install/phase3a.sh &>$WORKDIR/phase3a.log
@@ -194,7 +196,8 @@ EOF
     echo "PHASE-3d: custom packages and scripts from content"
     chroot $WORKDIR/chroot bash -e /install/phase3d.sh
     echo "PHASE-4a: upgrade all and cleanup in image"
-    chroot $WORKDIR/chroot bash -e /install/phase4a.sh &>$WORKDIR/phase4a.log
+    cat $WORKDIR/chroot/install/phase4a.sh
+    chroot $WORKDIR/chroot bash -ex /install/phase4a.sh &>$WORKDIR/phase4a.log
 
 }
 

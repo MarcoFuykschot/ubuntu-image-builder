@@ -4,15 +4,16 @@ config:
 image:
   name: image
   distro: noble
-  size: 1.5G
+  size: 5G
 
 content:
-  base: ./content
+  base: ../tests/content
   apt_packages:
     - vim
 # should be in content/packages dir
+  local_package_dir: ../tests/test-package/target/debian
   local_packages:
-    - test-package_0.1.0-1_amd64.deb
+    - test-package
 # should be in content/scripts dir
   scripts:
     - hello.sh

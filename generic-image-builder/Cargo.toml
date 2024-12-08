@@ -1,0 +1,12 @@
+[package]
+name = "generic-image-builder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { version = "1.0.94", features = ["backtrace"] }
+clap = { version = "4.5.23", features = ["derive"] }
+foyer-bytesize = { version = "2.0.0", features = ["serde"] }
+serde = { version = "1.0.215", features = ["derive"] }
+serde_yml = "0.0.12"
+shellfn = "0.1.1"

@@ -1,0 +1,10 @@
+snaps:
+   - name: core20
+     snap-id: dwTAh7MZZ01zyriOZErqd1JynQLiOGvM 
+     channel: stable
+     file: core20_2434.snap
+   - name: micro8ks
+     snap-id: EaXqgt1lyCaxKaQCU349mlodBkDCXRcg
+     channel: stable
+     classic: true
+     file: microk8s_7449.snap
