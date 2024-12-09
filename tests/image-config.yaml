@@ -4,7 +4,7 @@ config:
 image:
   name: image
   distro: noble
-  size: 5G
+  size: 5GiB
 
 content:
   base: ../tests/content

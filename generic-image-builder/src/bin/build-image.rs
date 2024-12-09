@@ -12,7 +12,9 @@ struct Args {
 pub fn main() -> Result<(), anyhow::Error> {
     let args = Args::parse();
 
-    println!("{:?}", ImageBuilder::create(&args.configpath)?);
+    let builder = ImageBuilder::create(&args.configpath)?;
+
+    let state = builder.phase0()?.phase1()?;
 
     Ok(())
 }

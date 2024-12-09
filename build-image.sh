@@ -141,6 +141,7 @@ ln -s /bin/true /sbin/initctl
 apt -qq --no-install-recommends install -y \
     ubuntu-server-minimal \
     linux-image-generic  \
+    systemd-repart \
     zstd \
     grub-efi-amd64
 exit
