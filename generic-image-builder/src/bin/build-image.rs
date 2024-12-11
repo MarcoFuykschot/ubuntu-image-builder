@@ -14,7 +14,9 @@ pub fn main() -> Result<(), anyhow::Error> {
 
     let builder = ImageBuilder::create(&args.configpath)?;
 
-    let state = builder.phase0()?.phase1()?;
+    let mut state = builder.phase0()?;
+    state = builder.phase1(state)?;
+    state = builder.phase2(state)?;
 
     Ok(())
 }

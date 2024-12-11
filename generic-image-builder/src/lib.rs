@@ -1,12 +1,13 @@
 use std::{
-    fs::File,
-    path::{Path, PathBuf},
+    fmt::Display, fs::File, path::{ Path, PathBuf}
 };
 
 use anyhow::{bail, ensure, Error};
 use foyer_bytesize::ByteSize;
 use serde::{Deserialize, Serialize};
-use shellfn::shell;
+
+mod shell_commands;
+use shell_commands::*;
 
 #[derive(Serialize, Debug, Clone, Deserialize)]
 pub struct ImageBuilder {
@@ -27,6 +28,15 @@ enum Distributions {
     Jammy,
 }
 
+impl ToString for Distributions {
+    fn to_string(&self) -> String {
+        match self {
+           Self::Jammy => String::from("jammy"),
+           Self::Noble => String::from("noble")
+        }
+    }
+}
+
 #[derive(Serialize, Debug, Clone, Deserialize)]
 struct ImageConfig {
     name: String,
@@ -43,38 +53,97 @@ struct ImageContent {
     scripts: Option<Vec<String>>,
 }
 
-pub struct ImageBuilderState {
-    config: ImageBuilder,
-    loop_dev: Option<String>,
-    directory_stack: Vec<PathBuf>,
+#[derive(Debug,Clone,PartialEq)]
+pub struct LoopDev(String);
+
+impl LoopDev {
+   pub fn boot_partition(&self) -> String {
+     format!("{}p1",self.0)
+   } 
+   pub fn root_partition(&self) -> String {
+     format!("{}p2",self.0)
+   } 
 }
 
-impl ImageBuilderState {
-    pub fn phase1(&mut self) -> Result<&mut ImageBuilderState, Error> {
-        let root_size = &self.config.image.size;
-        let esp_size = ByteSize::mib(512);
-        let disk_size = esp_size + *root_size;
+impl Display for LoopDev {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
-        dd(&self.config.image.name, disk_size.as_u64())?;
+#[derive(Debug,Clone,PartialEq)]
+pub enum ImageBuilderState {
+    Phase0,
+    Phase1(LoopDev),
+    Phase2(LoopDev),
+    Error
+}
 
-        partition_disk(&self.config.image.name, (root_size.as_u64()/512)-2048-34)?;
+impl Display for ImageBuilderState {
 
-        self.loop_dev= create_loopdev(&self.config.image.name)?.first().cloned();
-
-        let Some(loop_dev) = self.loop_dev.clone() else { bail!("loop device not valid"); };
-
-        println!("'{}'",loop_dev);
-        println!("{}", status_loopdev(&loop_dev)? );
-        println!("{:?}", status_fdisk(&loop_dev)? );
-
-        mkfs_vfat(format!("{}p1",loop_dev).as_str())?;
-        mkfs_ext4(format!("{}p2",loop_dev).as_str())?;
-
-        Ok(self)
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         match self {
+            Self::Error => f.write_str("Error"),
+            Self::Phase0 => f.write_str("PHASE0:"),
+            Self::Phase1(dev) => f.write_fmt(format_args!("PHASE1:{}:",dev)),
+            Self::Phase2(dev) => f.write_fmt(format_args!("PHASE2:{}:",dev)),
+         }
     }
 }
 
 impl ImageBuilder {
+    
+    pub fn phase1(&self,phase:ImageBuilderState) -> Result<ImageBuilderState, Error> {
+
+        ensure!( ImageBuilderState::Phase0 == phase  );
+
+        let root_size = &self.image.size;
+        let esp_size = ByteSize::mib(512);
+        let disk_size = esp_size + *root_size;
+
+        Self::log(&phase,"create diskimage");
+        dd(&self.image.name, disk_size.as_u64())?;
+
+        partition_disk(&self.image.name, (root_size.as_u64()/512)-2048-34)?;
+
+        let loop_dev= create_loopdev(&self.image.name)?.first().cloned();
+        let Some(loop_dev) = loop_dev.clone() else { bail!("loop device not valid"); };
+        let loop_dev = LoopDev(loop_dev);
+
+        println!("'{}'",loop_dev);
+        println!("{}", status_loopdev(&loop_dev.to_string())? );
+        println!("{:?}", status_fdisk(&loop_dev.to_string())? );
+
+        mkfs_vfat( &loop_dev.boot_partition())?;
+        mkfs_ext4( &loop_dev.root_partition())?;
+
+        Ok( ImageBuilderState::Phase1(loop_dev))
+    }
+
+    fn log(phase:&ImageBuilderState,message:&str) {
+        println!("{}:{}",phase,message);
+    }
+
+    pub fn phase2(&self,phase:ImageBuilderState) -> Result<ImageBuilderState,Error> {
+        let ImageBuilderState::Phase1(loop_dev) = phase.clone() else { bail!("Invalid state {:?}",phase)};
+
+        std::env::set_current_dir(&self.config.workdir)?;
+        
+        Self::log(&phase,"create and mount root");
+        std::fs::create_dir("chroot")?;
+        mount( &loop_dev.root_partition(),"chroot" )?; 
+
+        Self::log(&phase,"create and mount boot/efi");
+        std::fs::create_dir_all("chroot/boot/efi")?;
+        mount( &loop_dev.boot_partition(),"chroot/boot/efi" )?;
+
+        Self::log(&phase,"install debian bootstrap");
+        
+        println!("{:?}", bootstrap(&self.image.distro, "http:://archive.ubuntu.com/ubuntu")? );
+
+        Ok(ImageBuilderState::Phase2(loop_dev))
+    }
+
     pub fn create(configpath: &Path) -> Result<Self, anyhow::Error> {
         let configfile = File::open(configpath)?;
 
@@ -90,11 +159,7 @@ impl ImageBuilder {
         std::fs::create_dir_all(&self.config.workdir)?;
         std::env::set_current_dir(&self.config.workdir)?;
 
-        Ok(ImageBuilderState {
-            config: self.clone(),
-            loop_dev:None,
-            directory_stack: vec![std::env::current_dir()?],
-        })
+        Ok(ImageBuilderState::Phase0)
     }
 
     fn is_valid(&self) -> Result<(), anyhow::Error> {
@@ -142,52 +207,3 @@ impl ImageBuilder {
     }
 }
 
-#[shell]
-fn command_exists(name: &str) -> Result<String, anyhow::Error> {
-    "command -v $NAME"
-}
-
-#[shell]
-fn dd(image_name: &str, blocks: u64) -> Result<String, anyhow::Error> {
-    "dd if=/dev/zero of=$IMAGE_NAME bs=1 count=0 seek=$BLOCKS"
-}
-
-
-#[shell]
-fn partition_disk(image_name: &str,sectors:u64) -> Result<String,anyhow::Error> {
- r#"
-   cat <<EOF | sfdisk $IMAGE_NAME
-label: gpt
-unit: sectors
-first-lba: 2048
-sector-size: 512
-
-2048 +512M U
-- $SECTORS L
-EOF"#
-}
-
-#[shell]
-fn create_loopdev(image_name: &str) -> Result<Vec<String>,anyhow::Error> {
-  "losetup --show -fP $IMAGE_NAME"
-}
-
-#[shell]
-fn status_loopdev(loopdev:&str) -> Result<String,anyhow::Error> {
-  "losetup -l $LOOPDEV"
-}
-
-#[shell]
-fn status_fdisk(loopdev:&str) -> Result<Vec<String>,anyhow::Error> {
-  "fdisk -l $LOOPDEV"
-}
-
-#[shell]
-fn mkfs_vfat(loop_partition:&str) -> Result<Vec<String>,anyhow::Error> {
-   "mkfs.vfat $LOOP_PARTITION"
-}
-
-#[shell]
-fn mkfs_ext4(loop_partition:&str) -> Result<Vec<String>,anyhow::Error> {
-  "mkfs.ext4 $LOOP_PARTITION"
-}
